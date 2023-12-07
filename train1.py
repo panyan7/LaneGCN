@@ -10,10 +10,11 @@ from importlib import import_module
 from numbers import Number
 
 import torch
-from torch.utils.data import Sampler, DataLoader
+from torch.utils.data import Sampler, DataLoader, Subset
 
 
 from utils import Logger, load_pretrain
+from tqdm import tqdm
 
 
 
@@ -40,11 +41,13 @@ def main():
     torch.cuda.manual_seed(seed)
     np.random.seed(seed)
     random.seed(seed)
+    print("Start")
 
     # Import all settings for experiment.
     args = parser.parse_args()
     model = import_module(args.model)
     config, Dataset, collate_fn, net, loss, post_process, opt = model.get_model()
+    print("Finished import all settings")
 
     if args.resume or args.weight:
         ckpt_path = args.resume or args.weight
@@ -58,7 +61,7 @@ def main():
 
     if args.eval:
         # Data loader for evaluation
-        dataset = Dataset(config["val_split"], config, train=False)
+        dataset = Dataset('val', config, train=False)
      
         val_loader = DataLoader(
             dataset,
@@ -88,9 +91,14 @@ def main():
             os.makedirs(dst_dir)
         for f in files:
             shutil.copy(os.path.join(src_dir, f), os.path.join(dst_dir, f))
+    print("Finish copying code")
 
     # Data loader for training
-    dataset = Dataset(config["train_split"], config, train=True)
+    print(config["train_split"])
+    print(config["val_split"])
+    # dataset = Dataset(config["train_split"], config, train=True)
+    dataset = Dataset("train", config, train=True)
+    # dataset = Subset(dataset, range(100))
     train_loader = DataLoader(
         dataset,
         batch_size=config["batch_size"],
@@ -101,9 +109,13 @@ def main():
         worker_init_fn=worker_init_fn,
         drop_last=True,
     )
+    # torch.save(train_loader, "train_loader.pt")
+    # train_loader = torch.load("train_loader.pt")
 
     # Data loader for evaluation
-    dataset = Dataset(config["val_split"], config, train=False)
+    # dataset = Dataset(config["val_split"], config, train=False)
+    dataset = Dataset("val", config, train=False)
+    # dataset = Subset(dataset, range(100))
     val_loader = DataLoader(
         dataset,
         batch_size=config["val_batch_size"],
@@ -112,8 +124,10 @@ def main():
         collate_fn=collate_fn,
         pin_memory=True,
     )
+    # torch.save(val_loader, "val_loader.pt")
+    # val_loader = torch.load("val_loader.pt")
 
-
+    print("Start training")
     epoch = config["epoch"]
     remaining_epochs = int(np.ceil(config["num_epochs"] - epoch))
     for i in range(remaining_epochs):
@@ -128,10 +142,11 @@ def worker_init_fn(pid):
 
 
 def train(epoch, config, train_loader, net, loss, post_process, opt, val_loader=None):
-    train_loader.sampler.set_epoch(int(epoch))
+    # train_loader.sampler.set_epoch(int(epoch))
     net.train()
 
     num_batches = len(train_loader)
+    print(num_batches)
     epoch_per_batch = 1.0 / num_batches
     save_iters = int(np.ceil(config["save_freq"] * num_batches))
     display_iters = int(
@@ -141,7 +156,7 @@ def train(epoch, config, train_loader, net, loss, post_process, opt, val_loader=
 
     start_time = time.time()
     metrics = dict()
-    for i, data in enumerate(train_loader):
+    for i, data in tqdm(enumerate(train_loader)):
         epoch += epoch_per_batch
         data = dict(data)
 
@@ -149,6 +164,8 @@ def train(epoch, config, train_loader, net, loss, post_process, opt, val_loader=
         loss_out = loss(output, data)
         post_out = post_process(output, data)
         post_process.append(metrics, loss_out, post_out)
+        print(loss_out)
+        print(post_out)
 
         opt.zero_grad()
         loss_out["loss"].backward()
@@ -190,6 +207,7 @@ def val(config, data_loader, net, loss, post_process, epoch):
     # metrics = sync(metrics)
     # if hvd.rank() == 0:
     post_process.display(metrics, dt, epoch)
+    print(metrics)
     net.train()
 
 

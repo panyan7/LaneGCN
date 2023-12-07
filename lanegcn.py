@@ -54,8 +54,8 @@ if "save_dir" not in config:
 if not os.path.isabs(config["save_dir"]):
     config["save_dir"] = os.path.join(root_path, "results", config["save_dir"])
 
-config["batch_size"] = 32
-config["val_batch_size"] = 32
+config["batch_size"] = 1
+config["val_batch_size"] = 1
 config["workers"] = 0
 config["val_workers"] = config["workers"]
 
@@ -1037,6 +1037,18 @@ class PlaneNet(nn.Module):
             x=feat,
             pos=graph["ctrs"],
         )
+        num_edges = 0
+        edge_index = [[],[]]
+        for k, _ in graph["pre"].items():
+            num_edges += 1
+            edge_index[0].append(graph["pre"][k]["u"])
+            edge_index[1].append(graph["pre"][k]["v"])
+        for k, _ in graph["suc"].items():
+            num_edges += 1
+            edge_index[0].append(graph["suc"][k]["u"])
+            edge_index[1].append(graph["suc"][k]["v"])
+        data.num_edges = num_edges
+        data.edge_index = torch.tensor(edge_index).cuda()
         data = preprocess(data)
 
         out = self.model(data)
