@@ -5,7 +5,7 @@
 import numpy as np
 import os
 import sys
-from fractions import gcd
+from math import gcd
 from numbers import Number
 
 import torch
@@ -18,6 +18,12 @@ from utils import gpu, to_long,  Optimizer, StepLR
 from layers import Conv1d, Res1d, Linear, LinearRes, Null
 from numpy import float64, ndarray
 from typing import Any, Callable, Dict, List, Optional, Tuple, Type, Union
+from plane.models import *
+from plane.plane import *
+from plane.tools import *
+from preprocess.data_process import *
+
+import torch_geometric.data as tgdata
 
 
 file_path = os.path.abspath(__file__)
@@ -37,6 +43,7 @@ config["num_epochs"] = 36
 config["lr"] = [1e-3, 1e-4]
 config["lr_epochs"] = [32]
 config["lr_func"] = StepLR(config["lr"], config["lr_epochs"])
+config["use_plane"] = True
 
 
 if "save_dir" not in config:
@@ -89,6 +96,15 @@ config["reg_coef"] = 1.0
 config["mgn"] = 0.2
 config["cls_th"] = 2.0
 config["cls_ignore"] = 0.2
+
+
+plane_config = ModelConfig(
+    dim_output=config["n_map"],
+    dim_node_feature = config["n_map"],
+    dim_edge_feature = config["n_map"],
+)
+config["plane_config"] = plane_config
+
 ### end of config ###
 
 class Net(nn.Module):
@@ -115,7 +131,10 @@ class Net(nn.Module):
         self.config = config
 
         self.actor_net = ActorNet(config)
-        self.map_net = MapNet(config)
+        if self.config["use_plane"]:
+            self.map_net = PlaneNet(config)
+        else:
+            self.map_net = MapNet(config)
 
         self.a2m = A2M(config)
         self.m2m = M2M(config)
@@ -360,6 +379,7 @@ class MapNet(nn.Module):
             feat += res
             feat = self.relu(feat)
             res = feat
+        print(feat.shape, graph["idcs"].shape, graph["ctrs"].shape)
         return feat, graph["idcs"], graph["ctrs"]
 
 
@@ -911,3 +931,116 @@ def get_model():
 
 
     return config, ArgoDataset, collate_fn, net, loss, post_process, opt
+
+
+class PlaneNet(nn.Module):
+    """
+    Map Graph feature extractor with LaneGraphCNN
+    """
+    def __init__(self, config):
+        super(PlaneNet, self).__init__()
+        self.config = config
+        self.model = ModelGraph(config["plane_config"])
+        n_map = config["n_map"]
+        norm = "GN"
+        ng = 1
+
+        self.input = nn.Sequential(
+            nn.Linear(2, n_map),
+            nn.ReLU(inplace=True),
+            Linear(n_map, n_map, norm=norm, ng=ng, act=False),
+        )
+        self.seg = nn.Sequential(
+            nn.Linear(2, n_map),
+            nn.ReLU(inplace=True),
+            Linear(n_map, n_map, norm=norm, ng=ng, act=False),
+        )
+
+        keys = ["ctr", "norm", "ctr2", "left", "right"]
+        for i in range(config["num_scales"]):
+            keys.append("pre" + str(i))
+            keys.append("suc" + str(i))
+
+        fuse = dict()
+        for key in keys:
+            fuse[key] = []
+
+        for i in range(4):
+            for key in fuse:
+                if key in ["norm"]:
+                    fuse[key].append(nn.GroupNorm(gcd(ng, n_map), n_map))
+                elif key in ["ctr2"]:
+                    fuse[key].append(Linear(n_map, n_map, norm=norm, ng=ng, act=False))
+                else:
+                    fuse[key].append(nn.Linear(n_map, n_map, bias=False))
+
+        for key in fuse:
+            fuse[key] = nn.ModuleList(fuse[key])
+        self.fuse = nn.ModuleDict(fuse)
+        self.relu = nn.ReLU(inplace=True)
+
+    def forward(self, graph):
+        if (
+            len(graph["feats"]) == 0
+            or len(graph["pre"][-1]["u"]) == 0
+            or len(graph["suc"][-1]["u"]) == 0
+        ):
+            temp = graph["feats"]
+            return (
+                temp.new().resize_(0),
+                [temp.new().long().resize_(0) for x in graph["node_idcs"]],
+                temp.new().resize_(0),
+            )
+
+        ctrs = torch.cat(graph["ctrs"], 0)
+        feat = self.input(ctrs)
+        feat += self.seg(graph["feats"])
+        feat = self.relu(feat)
+
+        """fuse map"""
+        res = feat
+        for i in range(len(self.fuse["ctr"])):
+            temp = self.fuse["ctr"][i](feat)
+            for key in self.fuse:
+                if key.startswith("pre") or key.startswith("suc"):
+                    k1 = key[:3]
+                    k2 = int(key[3:])
+                    temp.index_add_(
+                        0,
+                        graph[k1][k2]["u"],
+                        self.fuse[key][i](feat[graph[k1][k2]["v"]]),
+                    )
+
+            if len(graph["left"]["u"] > 0):
+                temp.index_add_(
+                    0,
+                    graph["left"]["u"],
+                    self.fuse["left"][i](feat[graph["left"]["v"]]),
+                )
+            if len(graph["right"]["u"] > 0):
+                temp.index_add_(
+                    0,
+                    graph["right"]["u"],
+                    self.fuse["right"][i](feat[graph["right"]["v"]]),
+                )
+
+            feat = self.fuse["norm"][i](temp)
+            feat = self.relu(feat)
+
+            feat = self.fuse["ctr2"][i](feat)
+            feat += res
+            feat = self.relu(feat)
+            res = feat
+        print(feat.shape, graph["idcs"].shape, graph["ctrs"].shape)
+
+        data = tgdata.Data(
+            x=feat,
+            pos=graph["ctrs"],
+        )
+        data = preprocess(data)
+
+        out = self.model(data)
+        print(out.shape)
+        return out, graph["idcs"], graph["ctrs"]
+
+
