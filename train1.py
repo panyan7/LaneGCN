@@ -98,7 +98,7 @@ def main():
     print(config["val_split"])
     # dataset = Dataset(config["train_split"], config, train=True)
     dataset = Dataset("train", config, train=True)
-    # dataset = Subset(dataset, range(100))
+    dataset = Subset(dataset, range(100))
     train_loader = DataLoader(
         dataset,
         batch_size=config["batch_size"],
@@ -115,7 +115,7 @@ def main():
     # Data loader for evaluation
     # dataset = Dataset(config["val_split"], config, train=False)
     dataset = Dataset("val", config, train=False)
-    # dataset = Subset(dataset, range(100))
+    dataset = Subset(dataset, range(100))
     val_loader = DataLoader(
         dataset,
         batch_size=config["val_batch_size"],
@@ -143,6 +143,7 @@ def worker_init_fn(pid):
 
 def train(epoch, config, train_loader, net, loss, post_process, opt, val_loader=None):
     # train_loader.sampler.set_epoch(int(epoch))
+    print(net.get_device())
     net.train()
 
     num_batches = len(train_loader)
@@ -159,6 +160,7 @@ def train(epoch, config, train_loader, net, loss, post_process, opt, val_loader=
     for i, data in tqdm(enumerate(train_loader)):
         epoch += epoch_per_batch
         data = dict(data)
+        print(data)
 
         output = net(data)
         loss_out = loss(output, data)
