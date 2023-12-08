@@ -143,7 +143,6 @@ def worker_init_fn(pid):
 
 def train(epoch, config, train_loader, net, loss, post_process, opt, val_loader=None):
     # train_loader.sampler.set_epoch(int(epoch))
-    print(net.get_device())
     net.train()
 
     num_batches = len(train_loader)
@@ -161,7 +160,7 @@ def train(epoch, config, train_loader, net, loss, post_process, opt, val_loader=
         epoch += epoch_per_batch
         data = dict(data)
         print(data)
-
+        print(net)
         output = net(data)
         loss_out = loss(output, data)
         post_out = post_process(output, data)
